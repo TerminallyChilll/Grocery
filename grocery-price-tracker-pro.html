@@ -1,0 +1,1544 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Grocery Price Tracker Pro</title>
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+    <style>
+        #reader { width: 100%; max-width: 500px; margin: 0 auto; }
+        .scanner-container { background: #f8f9fa; padding: 1rem; border-radius: 0.5rem; }
+    </style>
+</head>
+<body class="bg-gray-50">
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect } = React;
+
+        function App() {
+            const [items, setItems] = useState([]);
+            const [view, setView] = useState('list');
+            const [editingItem, setEditingItem] = useState(null);
+            const [compareItemGroup, setCompareItemGroup] = useState(null);
+            const [scanning, setScanning] = useState(false);
+            const [scanner, setScanner] = useState(null);
+            const [apiKeyConfigured, setApiKeyConfigured] = useState(false);
+            const [apiKeyUnlocked, setApiKeyUnlocked] = useState(false);
+            const [unlockTimeout, setUnlockTimeout] = useState(null);
+            const [autoLockMinutes, setAutoLockMinutes] = useState(5);
+
+            // Load items from localStorage on mount
+            useEffect(() => {
+                try {
+                    const saved = localStorage.getItem('groceryItemsPro');
+                    if (saved) {
+                        setItems(JSON.parse(saved));
+                    }
+                } catch (e) {
+                    console.log('localStorage not available - data will not persist');
+                }
+                
+                // Check if API key is configured
+                checkApiKeyConfigured();
+                
+                // Load auto-lock preference
+                try {
+                    const lockPref = localStorage.getItem('autoLockMinutes');
+                    if (lockPref !== null) {
+                        setAutoLockMinutes(parseInt(lockPref));
+                    }
+                } catch (e) {
+                    setAutoLockMinutes(5); // default
+                }
+            }, []);
+            
+            // Cleanup unlock timeout on unmount
+            useEffect(() => {
+                return () => {
+                    if (unlockTimeout) {
+                        clearTimeout(unlockTimeout);
+                    }
+                };
+            }, [unlockTimeout]);
+            
+            // Auto-lock after configured minutes of inactivity
+            useEffect(() => {
+                if (apiKeyUnlocked && autoLockMinutes > 0) {
+                    if (unlockTimeout) {
+                        clearTimeout(unlockTimeout);
+                    }
+                    const timeout = setTimeout(() => {
+                        setApiKeyUnlocked(false);
+                        sessionStorage.removeItem('tempApiKey');
+                    }, autoLockMinutes * 60 * 1000);
+                    setUnlockTimeout(timeout);
+                } else if (apiKeyUnlocked && autoLockMinutes === 0) {
+                    // Never auto-lock - clear any existing timeout
+                    if (unlockTimeout) {
+                        clearTimeout(unlockTimeout);
+                        setUnlockTimeout(null);
+                    }
+                }
+            }, [apiKeyUnlocked, autoLockMinutes]);
+
+            // Save items to localStorage whenever they change
+            useEffect(() => {
+                try {
+                    localStorage.setItem('groceryItemsPro', JSON.stringify(items));
+                } catch (e) {
+                    console.log('localStorage not available - data will not persist');
+                }
+            }, [items]);
+
+            const startScanning = (onScan) => {
+                setScanning(true);
+                const html5QrCode = new Html5Qrcode("reader");
+                setScanner(html5QrCode);
+
+                // Configuration optimized for Android devices
+                const config = {
+                    fps: 10,
+                    qrbox: { width: 250, height: 250 },
+                    aspectRatio: 1.0,
+                    formatsToSupport: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13] // Support all barcode formats
+                };
+
+                // Try multiple approaches for Android compatibility
+                const tryFacingMode = () => {
+                    return html5QrCode.start(
+                        { facingMode: "environment" },
+                        config,
+                        (decodedText) => {
+                            html5QrCode.stop().then(() => {
+                                setScanning(false);
+                                setScanner(null);
+                                onScan(decodedText);
+                            }).catch(() => {
+                                setScanning(false);
+                                setScanner(null);
+                                onScan(decodedText);
+                            });
+                        }
+                    );
+                };
+
+                const tryCameraId = (cameraId) => {
+                    return html5QrCode.start(
+                        cameraId,
+                        config,
+                        (decodedText) => {
+                            html5QrCode.stop().then(() => {
+                                setScanning(false);
+                                setScanner(null);
+                                onScan(decodedText);
+                            }).catch(() => {
+                                setScanning(false);
+                                setScanner(null);
+                                onScan(decodedText);
+                            });
+                        }
+                    );
+                };
+
+                // First, try to get camera list
+                Html5Qrcode.getCameras().then(cameras => {
+                    if (cameras && cameras.length > 0) {
+                        // Prefer back/rear camera
+                        const backCamera = cameras.find(cam =>
+                            cam.label && (
+                                cam.label.toLowerCase().includes('back') ||
+                                cam.label.toLowerCase().includes('rear') ||
+                                cam.label.toLowerCase().includes('environment')
+                            )
+                        ) || cameras[cameras.length - 1];
+
+                        console.log('Using camera:', backCamera);
+                        tryCameraId(backCamera.id).catch(err => {
+                            console.error("Camera ID failed, trying facingMode", err);
+                            // Fallback to facingMode
+                            tryFacingMode().catch(err2 => {
+                                console.error("All methods failed", err2);
+                                setScanning(false);
+                                setScanner(null);
+                                alert("Unable to access camera. Please check permissions in your browser settings.");
+                            });
+                        });
+                    } else {
+                        // No cameras found, try facingMode anyway
+                        console.log('No cameras in list, trying facingMode');
+                        tryFacingMode().catch(err => {
+                            console.error("FacingMode failed", err);
+                            setScanning(false);
+                            setScanner(null);
+                            alert("Unable to access camera. Please check permissions in your browser settings.");
+                        });
+                    }
+                }).catch(err => {
+                    // getCameras failed, try facingMode directly
+                    console.error("getCameras failed, trying facingMode", err);
+                    tryFacingMode().catch(err2 => {
+                        console.error("FacingMode failed", err2);
+                        setScanning(false);
+                        setScanner(null);
+                        alert("Unable to access camera. Please check permissions in your browser settings.");
+                    });
+                });
+            };
+
+            const stopScanning = () => {
+                if (scanner) {
+                    scanner.stop().then(() => {
+                        setScanning(false);
+                        setScanner(null);
+                    }).catch((err) => {
+                        console.error("Error stopping scanner:", err);
+                        // Force cleanup even if stop fails
+                        setScanning(false);
+                        setScanner(null);
+                    });
+                } else {
+                    // Just in case scanner object is null but state says scanning
+                    setScanning(false);
+                    setScanner(null);
+                }
+            };
+
+            const checkApiKeyConfigured = () => {
+                try {
+                    const encrypted = localStorage.getItem('encryptedApiKey');
+                    setApiKeyConfigured(!!encrypted);
+                } catch (e) {
+                    setApiKeyConfigured(false);
+                }
+            };
+            
+            const resetApiKeyLock = () => {
+                setApiKeyUnlocked(false);
+                if (unlockTimeout) {
+                    clearTimeout(unlockTimeout);
+                }
+            };
+
+            const addItem = (item) => {
+                setItems([...items, { ...item, id: Date.now() }]);
+                setView('list');
+            };
+
+            const updateItem = (updatedItem) => {
+                setItems(items.map(item => item.id === updatedItem.id ? updatedItem : item));
+                setView('list');
+                setEditingItem(null);
+            };
+
+            const deleteItem = (id) => {
+                if (confirm('Delete this item?')) {
+                    setItems(items.filter(item => item.id !== id));
+                }
+            };
+
+            const linkItems = (itemId, linkedGroupId) => {
+                setItems(items.map(item => 
+                    item.id === itemId ? { ...item, linkedGroup: linkedGroupId } : item
+                ));
+            };
+
+            const getItemGroups = () => {
+                const groups = {};
+                items.forEach(item => {
+                    const groupId = item.linkedGroup || item.id;
+                    if (!groups[groupId]) {
+                        groups[groupId] = [];
+                    }
+                    groups[groupId].push(item);
+                });
+                return groups;
+            };
+
+            return (
+                <div className="min-h-screen pb-20">
+                    {/* Header */}
+                    <div className="bg-gradient-to-r from-blue-600 to-blue-700 text-white p-4 shadow-lg">
+                        <h1 className="text-2xl font-bold">🛒 Price Tracker Pro</h1>
+                        <p className="text-sm text-blue-100">Smart price comparison with AI</p>
+                    </div>
+
+                    {/* Main Content */}
+                    <div className="container mx-auto p-4 max-w-2xl">
+                        {view === 'list' && (
+                            <ItemList 
+                                items={items} 
+                                onEdit={(item) => { setEditingItem(item); setView('edit'); }}
+                                onDelete={deleteItem}
+                                onCompare={(groupId) => { setCompareItemGroup(groupId); setView('compare'); }}
+                                itemGroups={getItemGroups()}
+                            />
+                        )}
+
+                        {view === 'add' && (
+                            <ItemForm 
+                                existingItems={items}
+                                onSubmit={addItem}
+                                onCancel={() => setView('list')}
+                                scanning={scanning}
+                                onStartScan={startScanning}
+                                onStopScan={stopScanning}
+                                onLinkItems={linkItems}
+                                apiKeyUnlocked={apiKeyUnlocked}
+                                onRequestUnlock={() => setView('unlock')}
+                            />
+                        )}
+
+                        {view === 'edit' && editingItem && (
+                            <ItemForm 
+                                item={editingItem}
+                                existingItems={items}
+                                onSubmit={updateItem}
+                                onCancel={() => { setEditingItem(null); setView('list'); }}
+                                scanning={scanning}
+                                onStartScan={startScanning}
+                                onStopScan={stopScanning}
+                                onLinkItems={linkItems}
+                                apiKeyUnlocked={apiKeyUnlocked}
+                                onRequestUnlock={() => setView('unlock')}
+                            />
+                        )}
+
+                        {view === 'compare' && compareItemGroup && (
+                            <CompareView 
+                                items={items.filter(item => 
+                                    (item.linkedGroup || item.id) === compareItemGroup
+                                )}
+                                allItems={items}
+                                groupId={compareItemGroup}
+                                onBack={() => { setCompareItemGroup(null); setView('list'); }}
+                                onLinkItem={linkItems}
+                                apiKeyUnlocked={apiKeyUnlocked}
+                                onRequestUnlock={() => setView('unlock')}
+                            />
+                        )}
+                        
+                        {view === 'settings' && (
+                            <SettingsView
+                                onBack={() => setView('list')}
+                                apiKeyConfigured={apiKeyConfigured}
+                                onApiKeyConfigured={() => {
+                                    checkApiKeyConfigured();
+                                    setView('list');
+                                }}
+                            />
+                        )}
+                        
+                        {view === 'unlock' && (
+                            <UnlockView
+                                onUnlock={() => {
+                                    setApiKeyUnlocked(true);
+                                    setView('list');
+                                }}
+                                onCancel={() => setView('list')}
+                            />
+                        )}
+                    </div>
+
+                    {/* Bottom Navigation */}
+                    <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 shadow-lg">
+                        <div className="flex justify-around p-3">
+                            <button 
+                                onClick={() => setView('list')}
+                                className={`flex flex-col items-center px-3 py-2 rounded-lg ${view === 'list' ? 'text-blue-600 bg-blue-50' : 'text-gray-600'}`}
+                            >
+                                <span className="text-2xl">📋</span>
+                                <span className="text-xs mt-1">List</span>
+                            </button>
+                            <button 
+                                onClick={() => setView('add')}
+                                className={`flex flex-col items-center px-3 py-2 rounded-lg ${view === 'add' ? 'text-blue-600 bg-blue-50' : 'text-gray-600'}`}
+                            >
+                                <span className="text-2xl">➕</span>
+                                <span className="text-xs mt-1">Add</span>
+                            </button>
+                            <button 
+                                onClick={() => setView('settings')}
+                                className={`flex flex-col items-center px-3 py-2 rounded-lg relative ${view === 'settings' ? 'text-blue-600 bg-blue-50' : 'text-gray-600'}`}
+                            >
+                                <span className="text-2xl">⚙️</span>
+                                <span className="text-xs mt-1">Settings</span>
+                                {apiKeyConfigured && (
+                                    <span className="absolute top-1 right-1 w-2 h-2 bg-green-500 rounded-full"></span>
+                                )}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
+        function ItemList({ items, onEdit, onDelete, onCompare, itemGroups }) {
+            const [searchTerm, setSearchTerm] = useState('');
+            const [filterStore, setFilterStore] = useState('all');
+
+            const stores = [...new Set(items.map(item => item.store))].sort();
+            
+            const filteredItems = items.filter(item => {
+                const matchesSearch = item.itemName.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                                     item.store.toLowerCase().includes(searchTerm.toLowerCase());
+                const matchesStore = filterStore === 'all' || item.store === filterStore;
+                return matchesSearch && matchesStore;
+            });
+
+            const groupedItems = Object.entries(itemGroups).map(([groupId, groupItems]) => ({
+                groupId: parseInt(groupId),
+                items: groupItems,
+                representativeName: groupItems[0].itemName
+            }));
+
+            if (items.length === 0) {
+                return (
+                    <div className="text-center py-12">
+                        <div className="text-6xl mb-4">🛒</div>
+                        <h2 className="text-xl font-semibold text-gray-700 mb-2">No items yet!</h2>
+                        <p className="text-gray-500 mb-1">Tap the + button below to add your first item</p>
+                        <p className="text-sm text-gray-400">✨ AI will help match similar items across stores</p>
+                    </div>
+                );
+            }
+
+            return (
+                <div>
+                    <div className="mb-4">
+                        <input 
+                            type="text"
+                            placeholder="Search items or stores..."
+                            value={searchTerm}
+                            onChange={(e) => setSearchTerm(e.target.value)}
+                            className="w-full p-3 border border-gray-300 rounded-lg mb-2"
+                        />
+                        <select 
+                            value={filterStore}
+                            onChange={(e) => setFilterStore(e.target.value)}
+                            className="w-full p-3 border border-gray-300 rounded-lg"
+                        >
+                            <option value="all">All Stores</option>
+                            {stores.map(store => (
+                                <option key={store} value={store}>{store}</option>
+                            ))}
+                        </select>
+                    </div>
+
+                    {groupedItems.length > 0 && (
+                        <div className="mb-4 p-3 bg-gradient-to-r from-blue-50 to-purple-50 rounded-lg border border-blue-200">
+                            <div className="flex items-center gap-2 mb-2">
+                                <span className="text-xl">🤖</span>
+                                <p className="text-sm font-semibold text-blue-900">Compare prices:</p>
+                            </div>
+                            <div className="flex flex-wrap gap-2">
+                                {groupedItems.map(group => (
+                                    <button
+                                        key={group.groupId}
+                                        onClick={() => onCompare(group.groupId)}
+                                        className="px-3 py-1 bg-white border border-blue-300 rounded-full text-sm text-blue-700 hover:bg-blue-100 flex items-center gap-1"
+                                    >
+                                        {group.representativeName}
+                                        {group.items.length > 1 && (
+                                            <span className="bg-blue-500 text-white text-xs px-1.5 rounded-full">
+                                                {group.items.length}
+                                            </span>
+                                        )}
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+
+                    <div className="space-y-3">
+                        {filteredItems.map(item => (
+                            <div key={item.id} className="bg-white p-4 rounded-lg shadow border border-gray-200">
+                                <div className="flex justify-between items-start mb-2">
+                                    <div className="flex-1">
+                                        <h3 className="font-bold text-lg text-gray-800">{item.itemName}</h3>
+                                        <p className="text-sm text-gray-600">📍 {item.store}</p>
+                                        {item.linkedGroup && (
+                                            <span className="text-xs bg-purple-100 text-purple-700 px-2 py-0.5 rounded-full mt-1 inline-block">
+                                                🔗 Linked
+                                            </span>
+                                        )}
+                                    </div>
+                                    <div className="flex gap-2">
+                                        <button onClick={() => onEdit(item)} className="text-blue-600 hover:text-blue-800">✏️</button>
+                                        <button onClick={() => onDelete(item.id)} className="text-red-600 hover:text-red-800">🗑️</button>
+                                    </div>
+                                </div>
+                                <div className="flex justify-between items-center mt-3 pt-3 border-t border-gray-100">
+                                    <div>
+                                        <p className="text-2xl font-bold text-green-600">${item.unitPrice.toFixed(2)}</p>
+                                        <p className="text-xs text-gray-500">per {item.unit}</p>
+                                    </div>
+                                    <div className="text-right">
+                                        <p className="text-sm text-gray-600">${item.totalPrice.toFixed(2)}</p>
+                                        <p className="text-xs text-gray-500">{item.weight}{item.unit}</p>
+                                    </div>
+                                </div>
+                                {item.barcode && (
+                                    <p className="text-xs text-gray-400 mt-2">🔢 {item.barcode}</p>
+                                )}
+                            </div>
+                        ))}
+                    </div>
+
+                    {filteredItems.length === 0 && (
+                        <div className="text-center py-8 text-gray-500">
+                            No items match your search
+                        </div>
+                    )}
+                </div>
+            );
+        }
+
+        function ItemForm({ item, existingItems, onSubmit, onCancel, scanning, onStartScan, onStopScan, onLinkItems, apiKeyUnlocked, onRequestUnlock }) {
+            const [formData, setFormData] = useState(item || {
+                itemName: '',
+                store: '',
+                totalPrice: '',
+                weight: '',
+                unit: 'kg',
+                barcode: ''
+            });
+            const [aiSuggestions, setAiSuggestions] = useState([]);
+            const [checkingAI, setCheckingAI] = useState(false);
+            const [showBarcodeScanner, setShowBarcodeScanner] = useState(false);
+            
+            // Helper to get decrypted API key
+            const getApiKey = async (pin) => {
+                try {
+                    const encrypted = localStorage.getItem('encryptedApiKey');
+                    const salt = localStorage.getItem('apiKeySalt');
+                    if (!encrypted || !salt) return null;
+                    
+                    const enc = new TextEncoder();
+                    const keyMaterial = await window.crypto.subtle.importKey(
+                        "raw",
+                        enc.encode(pin),
+                        "PBKDF2",
+                        false,
+                        ["deriveBits", "deriveKey"]
+                    );
+                    
+                    const key = await window.crypto.subtle.deriveKey(
+                        {
+                            name: "PBKDF2",
+                            salt: new Uint8Array(salt.split(',').map(Number)),
+                            iterations: 100000,
+                            hash: "SHA-256"
+                        },
+                        keyMaterial,
+                        { name: "AES-GCM", length: 256 },
+                        false,
+                        ["decrypt"]
+                    );
+                    
+                    const encryptedData = JSON.parse(encrypted);
+                    const decrypted = await window.crypto.subtle.decrypt(
+                        {
+                            name: "AES-GCM",
+                            iv: new Uint8Array(encryptedData.iv)
+                        },
+                        key,
+                        new Uint8Array(encryptedData.data)
+                    );
+                    
+                    return new TextDecoder().decode(decrypted);
+                } catch (e) {
+                    return null;
+                }
+            };
+
+            const handleChange = (field, value) => {
+                setFormData({ ...formData, [field]: value });
+                
+                // Check for AI suggestions when item name changes
+                if (field === 'itemName' && value.length > 2 && !item) {
+                    checkForSimilarItems(value);
+                }
+            };
+
+            const checkForSimilarItems = async (itemName) => {
+                if (existingItems.length === 0) return;
+                
+                // Check if API key is available
+                if (!apiKeyUnlocked) {
+                    return; // Silently skip AI check if not unlocked
+                }
+                
+                const apiKey = sessionStorage.getItem('tempApiKey');
+                if (!apiKey) {
+                    return;
+                }
+                
+                setCheckingAI(true);
+                try {
+                    const existingNames = existingItems.map(item => item.itemName).join(', ');
+                    
+                    const response = await fetch("https://api.anthropic.com/v1/messages", {
+                        method: "POST",
+                        headers: {
+                            "Content-Type": "application/json",
+                            "x-api-key": apiKey,
+                            "anthropic-version": "2023-06-01"
+                        },
+                        body: JSON.stringify({
+                            model: "claude-sonnet-4-20250514",
+                            max_tokens: 500,
+                            messages: [
+                                { 
+                                    role: "user", 
+                                    content: `I'm adding "${itemName}" to my grocery price tracker. Here are items I already have: ${existingNames}
+
+Are any of these the SAME product (just different spelling/naming)? For example, "Rib Steak" and "Ribeye Steak" are the same.
+
+Respond ONLY with valid JSON in this exact format, NO OTHER TEXT:
+{
+  "matches": [
+    {"name": "existing item name", "confidence": "high"}
+  ]
+}
+
+If no matches, respond with: {"matches": []}
+
+DO NOT include any explanation, just the JSON.`
+                                }
+                            ]
+                        })
+                    });
+
+                    const data = await response.json();
+                    const responseText = data.content[0].text.trim();
+                    
+                    // Clean up response to extract JSON
+                    let jsonText = responseText;
+                    if (jsonText.includes('```json')) {
+                        jsonText = jsonText.split('```json')[1].split('```')[0].trim();
+                    } else if (jsonText.includes('```')) {
+                        jsonText = jsonText.split('```')[1].split('```')[0].trim();
+                    }
+                    
+                    const result = JSON.parse(jsonText);
+                    
+                    if (result.matches && result.matches.length > 0) {
+                        setAiSuggestions(result.matches);
+                    }
+                } catch (error) {
+                    console.error('AI check failed:', error);
+                }
+                setCheckingAI(false);
+            };
+
+            const calculateUnitPrice = () => {
+                const total = parseFloat(formData.totalPrice);
+                const weight = parseFloat(formData.weight);
+
+                if (!total || !weight) return 0;
+
+                // Normalize everything to price per unit
+                switch(formData.unit) {
+                    case 'kg':
+                        return total / weight;
+                    case 'lb':
+                        return total / weight;
+                    case '100g':
+                        return (total / weight) * 100;
+                    case 'g':
+                        return (total / weight) * 1000;
+                    case 'L':
+                        return total / weight;
+                    case 'mL':
+                        return (total / weight) * 1000;
+                    case 'fl oz':
+                        return total / weight;
+                    case 'gal':
+                        return total / weight;
+                    default:
+                        return total / weight;
+                }
+            };
+
+            const handleSubmit = (e) => {
+                e.preventDefault();
+
+                const unitPrice = calculateUnitPrice();
+
+                onSubmit({
+                    ...formData,
+                    totalPrice: parseFloat(formData.totalPrice) || 0,
+                    weight: parseFloat(formData.weight) || 0,
+                    unitPrice: unitPrice,
+                    id: item?.id,
+                    linkedGroup: item?.linkedGroup
+                });
+            };
+
+            const handleScan = (barcode) => {
+                handleChange('barcode', barcode);
+                setShowBarcodeScanner(false);
+            };
+
+            const linkToExistingItem = (existingItemName) => {
+                const existingItem = existingItems.find(i => i.itemName === existingItemName);
+                if (existingItem) {
+                    const linkedGroupId = existingItem.linkedGroup || existingItem.id;
+                    handleChange('linkedGroup', linkedGroupId);
+                }
+                setAiSuggestions([]);
+            };
+
+            return (
+                <div className="bg-white p-6 rounded-lg shadow-lg">
+                    <h2 className="text-xl font-bold mb-4">{item ? 'Edit Item' : 'Add New Item'}</h2>
+                    
+                    {/* Optional Barcode Scanner */}
+                    {!showBarcodeScanner && (
+                        <button 
+                            onClick={() => setShowBarcodeScanner(true)}
+                            className="w-full mb-4 bg-gray-100 text-gray-700 py-3 rounded-lg hover:bg-gray-200 flex items-center justify-center gap-2 border-2 border-dashed border-gray-300"
+                        >
+                            <span className="text-xl">📷</span>
+                            Scan Barcode (Optional)
+                        </button>
+                    )}
+
+                    {showBarcodeScanner && !scanning && (
+                        <div className="mb-4">
+                            <button
+                                onClick={() => onStartScan(handleScan)}
+                                className="w-full bg-blue-600 text-white py-3 rounded-lg hover:bg-blue-700 flex items-center justify-center gap-2"
+                            >
+                                <span className="text-xl">📷</span>
+                                Start Camera
+                            </button>
+                            <button
+                                onClick={() => {
+                                    onStopScan();
+                                    setShowBarcodeScanner(false);
+                                }}
+                                className="w-full mt-2 bg-gray-200 text-gray-700 py-2 rounded-lg hover:bg-gray-300 text-sm"
+                            >
+                                Skip Barcode
+                            </button>
+                        </div>
+                    )}
+
+                    {scanning && (
+                        <div className="scanner-container mb-4">
+                            <div id="reader"></div>
+                            <button 
+                                onClick={onStopScan}
+                                className="w-full mt-3 bg-red-500 text-white py-2 rounded-lg hover:bg-red-600"
+                            >
+                                Cancel Scan
+                            </button>
+                        </div>
+                    )}
+
+                    {formData.barcode && (
+                        <div className="mb-4 p-3 bg-green-50 rounded border border-green-200 flex justify-between items-center">
+                            <p className="text-sm text-gray-600">✅ Barcode: <span className="font-mono">{formData.barcode}</span></p>
+                            <button 
+                                onClick={() => handleChange('barcode', '')}
+                                className="text-red-500 hover:text-red-700 text-sm"
+                            >
+                                Remove
+                            </button>
+                        </div>
+                    )}
+
+                    {/* AI Suggestions */}
+                    {aiSuggestions.length > 0 && (
+                        <div className="mb-4 p-4 bg-purple-50 rounded-lg border-2 border-purple-300">
+                            <div className="flex items-center gap-2 mb-2">
+                                <span className="text-xl">🤖</span>
+                                <p className="font-semibold text-purple-900">AI Found Similar Items!</p>
+                            </div>
+                            <p className="text-sm text-purple-700 mb-3">Link these together to compare prices?</p>
+                            {aiSuggestions.map((suggestion, idx) => (
+                                <button
+                                    key={idx}
+                                    onClick={() => linkToExistingItem(suggestion.name)}
+                                    className="w-full mb-2 p-3 bg-white border-2 border-purple-300 rounded-lg hover:bg-purple-100 text-left"
+                                >
+                                    <p className="font-semibold text-gray-800">{suggestion.name}</p>
+                                    <p className="text-xs text-purple-600">Confidence: {suggestion.confidence}</p>
+                                </button>
+                            ))}
+                            <button
+                                onClick={() => setAiSuggestions([])}
+                                className="w-full mt-2 text-sm text-gray-600 hover:text-gray-800"
+                            >
+                                No thanks, keep separate
+                            </button>
+                        </div>
+                    )}
+
+                    {checkingAI && (
+                        <div className="mb-4 p-3 bg-blue-50 rounded border border-blue-200 text-center">
+                            <p className="text-sm text-blue-700">🤖 AI is checking for similar items...</p>
+                        </div>
+                    )}
+
+                    <form onSubmit={handleSubmit} className="space-y-4">
+                        {!apiKeyUnlocked && existingItems.length > 0 && (
+                            <div className="p-3 bg-purple-50 border border-purple-200 rounded-lg text-sm">
+                                <p className="text-purple-800">
+                                    💡 <strong>Tip:</strong> Configure AI in Settings to automatically detect similar items (like "Rib Steak" vs "Ribeye Steak")
+                                </p>
+                            </div>
+                        )}
+                        
+                        <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-1">Item Name</label>
+                            <input
+                                type="text"
+                                value={formData.itemName}
+                                onChange={(e) => handleChange('itemName', e.target.value)}
+                                className="w-full p-3 border border-gray-300 rounded-lg"
+                                placeholder="e.g., Gala Apples, Ribeye Steak, Milk 2%"
+                            />
+                        </div>
+
+                        <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-1">Store</label>
+                            <input
+                                type="text"
+                                value={formData.store}
+                                onChange={(e) => handleChange('store', e.target.value)}
+                                className="w-full p-3 border border-gray-300 rounded-lg"
+                                placeholder="e.g., Loblaws, Costco, Metro, FreshCo"
+                            />
+                        </div>
+
+                        <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-1">Total Price ($)</label>
+                            <input
+                                type="number"
+                                step="0.01"
+                                value={formData.totalPrice}
+                                onChange={(e) => handleChange('totalPrice', e.target.value)}
+                                className="w-full p-3 border border-gray-300 rounded-lg"
+                                placeholder="e.g., 5.99"
+                            />
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-3">
+                            <div>
+                                <label className="block text-sm font-medium text-gray-700 mb-1">Weight</label>
+                                <input
+                                    type="number"
+                                    step="0.01"
+                                    value={formData.weight}
+                                    onChange={(e) => handleChange('weight', e.target.value)}
+                                    className="w-full p-3 border border-gray-300 rounded-lg"
+                                    placeholder="e.g., 2.5"
+                                />
+                            </div>
+                            <div>
+                                <label className="block text-sm font-medium text-gray-700 mb-1">Unit</label>
+                                <select
+                                    value={formData.unit}
+                                    onChange={(e) => handleChange('unit', e.target.value)}
+                                    className="w-full p-3 border border-gray-300 rounded-lg"
+                                >
+                                    <option value="kg">per kg</option>
+                                    <option value="lb">per lb</option>
+                                    <option value="100g">per 100g</option>
+                                    <option value="g">per g</option>
+                                    <option value="L">per L (liter)</option>
+                                    <option value="mL">per mL (milliliter)</option>
+                                    <option value="fl oz">per fl oz (fluid ounce)</option>
+                                    <option value="gal">per gal (gallon)</option>
+                                </select>
+                            </div>
+                        </div>
+
+                        {formData.totalPrice && formData.weight && (
+                            <div className="p-4 bg-green-50 border border-green-200 rounded-lg">
+                                <p className="text-sm text-gray-700 mb-1">Unit Price:</p>
+                                <p className="text-2xl font-bold text-green-600">
+                                    ${calculateUnitPrice().toFixed(2)} / {formData.unit}
+                                </p>
+                            </div>
+                        )}
+
+                        <div className="flex gap-3 pt-4">
+                            <button 
+                                type="button"
+                                onClick={onCancel}
+                                className="flex-1 bg-gray-200 text-gray-700 py-3 rounded-lg hover:bg-gray-300"
+                            >
+                                Cancel
+                            </button>
+                            <button 
+                                type="submit"
+                                className="flex-1 bg-blue-600 text-white py-3 rounded-lg hover:bg-blue-700 font-semibold"
+                            >
+                                {item ? 'Update' : 'Add'} Item
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            );
+        }
+
+        function CompareView({ items, allItems, groupId, onBack, onLinkItem, apiKeyUnlocked, onRequestUnlock }) {
+            const [showAISuggestions, setShowAISuggestions] = useState(false);
+            const [aiSuggestions, setAiSuggestions] = useState([]);
+            const [checkingAI, setCheckingAI] = useState(false);
+
+            const sortedItems = [...items].sort((a, b) => a.unitPrice - b.unitPrice);
+            const cheapest = sortedItems[0];
+            const itemName = cheapest.itemName;
+
+            const findSimilarItems = async () => {
+                // Check if API key is available
+                if (!apiKeyUnlocked) {
+                    onRequestUnlock();
+                    return;
+                }
+                
+                const apiKey = sessionStorage.getItem('tempApiKey');
+                if (!apiKey) {
+                    alert('Please configure your API key in Settings');
+                    return;
+                }
+                
+                setCheckingAI(true);
+                setShowAISuggestions(true);
+                
+                try {
+                    const unlinkedItems = allItems.filter(item => 
+                        !item.linkedGroup && !items.find(i => i.id === item.id)
+                    );
+                    
+                    if (unlinkedItems.length === 0) {
+                        setAiSuggestions([]);
+                        setCheckingAI(false);
+                        return;
+                    }
+
+                    const unlinkedNames = unlinkedItems.map(item => item.itemName).join(', ');
+                    
+                    const response = await fetch("https://api.anthropic.com/v1/messages", {
+                        method: "POST",
+                        headers: {
+                            "Content-Type": "application/json",
+                            "x-api-key": apiKey,
+                            "anthropic-version": "2023-06-01"
+                        },
+                        body: JSON.stringify({
+                            model: "claude-sonnet-4-20250514",
+                            max_tokens: 500,
+                            messages: [
+                                { 
+                                    role: "user", 
+                                    content: `I'm comparing prices for "${itemName}". Here are other items in my list: ${unlinkedNames}
+
+Are any of these the SAME product (just different spelling/naming)?
+
+Respond ONLY with valid JSON in this exact format, NO OTHER TEXT:
+{
+  "matches": [
+    {"name": "item name", "confidence": "high"}
+  ]
+}
+
+If no matches, respond with: {"matches": []}
+
+DO NOT include any explanation, just the JSON.`
+                                }
+                            ]
+                        })
+                    });
+
+                    const data = await response.json();
+                    const responseText = data.content[0].text.trim();
+                    
+                    // Clean up response
+                    let jsonText = responseText;
+                    if (jsonText.includes('```json')) {
+                        jsonText = jsonText.split('```json')[1].split('```')[0].trim();
+                    } else if (jsonText.includes('```')) {
+                        jsonText = jsonText.split('```')[1].split('```')[0].trim();
+                    }
+                    
+                    const result = JSON.parse(jsonText);
+                    
+                    if (result.matches && result.matches.length > 0) {
+                        const matchesWithIds = result.matches.map(match => {
+                            const item = unlinkedItems.find(i => i.itemName === match.name);
+                            return { ...match, itemId: item?.id };
+                        }).filter(m => m.itemId);
+                        
+                        setAiSuggestions(matchesWithIds);
+                    }
+                } catch (error) {
+                    console.error('AI check failed:', error);
+                    alert('AI matching failed. Please check your API key.');
+                }
+                setCheckingAI(false);
+            };
+
+            const linkSuggestedItem = (itemId) => {
+                onLinkItem(itemId, groupId);
+                setAiSuggestions(aiSuggestions.filter(s => s.itemId !== itemId));
+            };
+
+            return (
+                <div>
+                    <button 
+                        onClick={onBack}
+                        className="mb-4 text-blue-600 hover:text-blue-800 flex items-center gap-2 font-semibold"
+                    >
+                        <span>←</span> Back to List
+                    </button>
+
+                    <div className="bg-gradient-to-r from-blue-50 to-purple-50 p-6 rounded-lg shadow-lg mb-4 border border-blue-200">
+                        <h2 className="text-xl font-bold mb-2">{itemName}</h2>
+                        <p className="text-gray-600 mb-3">Comparing {items.length} {items.length === 1 ? 'store' : 'stores'}</p>
+                        
+                        {!showAISuggestions && (
+                            <button
+                                onClick={findSimilarItems}
+                                className="bg-purple-600 text-white px-4 py-2 rounded-lg hover:bg-purple-700 flex items-center gap-2 text-sm"
+                            >
+                                <span>🤖</span>
+                                {apiKeyUnlocked ? 'Find Similar Items with AI' : '🔐 Unlock AI to Find Similar Items'}
+                            </button>
+                        )}
+                    </div>
+
+                    {checkingAI && (
+                        <div className="mb-4 p-4 bg-blue-50 rounded-lg border border-blue-200 text-center">
+                            <p className="text-sm text-blue-700">🤖 AI is searching for similar items...</p>
+                        </div>
+                    )}
+
+                    {showAISuggestions && aiSuggestions.length > 0 && (
+                        <div className="mb-4 p-4 bg-purple-50 rounded-lg border-2 border-purple-300">
+                            <div className="flex items-center gap-2 mb-2">
+                                <span className="text-xl">🤖</span>
+                                <p className="font-semibold text-purple-900">AI Found Possible Matches!</p>
+                            </div>
+                            {aiSuggestions.map((suggestion, idx) => (
+                                <div key={idx} className="mb-2 p-3 bg-white border border-purple-200 rounded-lg">
+                                    <div className="flex justify-between items-center">
+                                        <div>
+                                            <p className="font-semibold text-gray-800">{suggestion.name}</p>
+                                            <p className="text-xs text-purple-600">Confidence: {suggestion.confidence}</p>
+                                        </div>
+                                        <button
+                                            onClick={() => linkSuggestedItem(suggestion.itemId)}
+                                            className="bg-purple-600 text-white px-3 py-1 rounded text-sm hover:bg-purple-700"
+                                        >
+                                            Link
+                                        </button>
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    )}
+
+                    {showAISuggestions && aiSuggestions.length === 0 && !checkingAI && (
+                        <div className="mb-4 p-4 bg-gray-50 rounded-lg border border-gray-200 text-center">
+                            <p className="text-sm text-gray-600">No similar items found</p>
+                        </div>
+                    )}
+
+                    <div className="space-y-3">
+                        {sortedItems.map((item, index) => (
+                            <div 
+                                key={item.id} 
+                                className={`bg-white p-4 rounded-lg shadow-lg border-2 ${
+                                    item.id === cheapest.id ? 'border-green-500 bg-green-50' : 'border-gray-200'
+                                }`}
+                            >
+                                {item.id === cheapest.id && (
+                                    <div className="flex items-center gap-2 mb-2">
+                                        <span className="bg-green-500 text-white text-xs px-2 py-1 rounded-full font-bold">
+                                            🏆 BEST PRICE
+                                        </span>
+                                    </div>
+                                )}
+                                <div className="flex justify-between items-start mb-2">
+                                    <div>
+                                        <h3 className="font-bold text-lg">{item.store}</h3>
+                                        <p className="text-sm text-gray-600">{item.itemName}</p>
+                                        <p className="text-xs text-gray-500">{item.weight}{item.unit} for ${item.totalPrice.toFixed(2)}</p>
+                                    </div>
+                                    <div className="text-right">
+                                        <p className="text-2xl font-bold text-green-600">${item.unitPrice.toFixed(2)}</p>
+                                        <p className="text-xs text-gray-500">per {item.unit}</p>
+                                    </div>
+                                </div>
+                                {sortedItems.length > 1 && item.id !== cheapest.id && (
+                                    <div className="mt-2 pt-2 border-t border-gray-200">
+                                        <p className="text-sm text-red-600 font-semibold">
+                                            💸 ${(item.unitPrice - cheapest.unitPrice).toFixed(2)} more expensive per {item.unit}
+                                        </p>
+                                    </div>
+                                )}
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            );
+        }
+
+        function SettingsView({ onBack, apiKeyConfigured, onApiKeyConfigured }) {
+            const [apiKey, setApiKey] = useState('');
+            const [pin, setPin] = useState('');
+            const [confirmPin, setConfirmPin] = useState('');
+            const [showKey, setShowKey] = useState(false);
+            const [saving, setSaving] = useState(false);
+            const [testing, setTesting] = useState(false);
+            const [autoLockMinutes, setAutoLockMinutes] = useState(5);
+            
+            // Load current auto-lock preference
+            useEffect(() => {
+                try {
+                    const lockPref = localStorage.getItem('autoLockMinutes');
+                    if (lockPref !== null) {
+                        setAutoLockMinutes(parseInt(lockPref));
+                    }
+                } catch (e) {
+                    setAutoLockMinutes(5);
+                }
+            }, []);
+            
+            const saveAutoLockPreference = (minutes) => {
+                setAutoLockMinutes(minutes);
+                try {
+                    localStorage.setItem('autoLockMinutes', minutes.toString());
+                    // Reload page to apply new setting
+                    setTimeout(() => window.location.reload(), 500);
+                } catch (e) {
+                    console.error('Failed to save auto-lock preference');
+                }
+            };
+            
+            const encryptAndSaveApiKey = async () => {
+                if (pin.length !== 6 || !/^\d+$/.test(pin)) {
+                    alert('PIN must be exactly 6 digits');
+                    return;
+                }
+                
+                if (pin !== confirmPin) {
+                    alert('PINs do not match');
+                    return;
+                }
+                
+                if (!apiKey.startsWith('sk-ant-')) {
+                    alert('Invalid API key format. Should start with sk-ant-');
+                    return;
+                }
+                
+                setSaving(true);
+                try {
+                    // Generate encryption key from PIN
+                    const enc = new TextEncoder();
+                    const keyMaterial = await window.crypto.subtle.importKey(
+                        "raw",
+                        enc.encode(pin),
+                        "PBKDF2",
+                        false,
+                        ["deriveBits", "deriveKey"]
+                    );
+                    
+                    const salt = window.crypto.getRandomValues(new Uint8Array(16));
+                    const key = await window.crypto.subtle.deriveKey(
+                        {
+                            name: "PBKDF2",
+                            salt: salt,
+                            iterations: 100000,
+                            hash: "SHA-256"
+                        },
+                        keyMaterial,
+                        { name: "AES-GCM", length: 256 },
+                        false,
+                        ["encrypt"]
+                    );
+                    
+                    const iv = window.crypto.getRandomValues(new Uint8Array(12));
+                    const encrypted = await window.crypto.subtle.encrypt(
+                        {
+                            name: "AES-GCM",
+                            iv: iv
+                        },
+                        key,
+                        enc.encode(apiKey)
+                    );
+                    
+                    // Store encrypted key and salt
+                    localStorage.setItem('encryptedApiKey', JSON.stringify({
+                        data: Array.from(new Uint8Array(encrypted)),
+                        iv: Array.from(iv)
+                    }));
+                    localStorage.setItem('apiKeySalt', Array.from(salt).join(','));
+                    
+                    alert('✅ API key saved securely! You can now use AI features.');
+                    onApiKeyConfigured();
+                } catch (error) {
+                    console.error('Encryption failed:', error);
+                    alert('Failed to save API key. Please try again.');
+                }
+                setSaving(false);
+            };
+            
+            const testApiKey = async () => {
+                if (!apiKey) {
+                    alert('Please enter an API key first');
+                    return;
+                }
+                
+                setTesting(true);
+                try {
+                    const response = await fetch("https://api.anthropic.com/v1/messages", {
+                        method: "POST",
+                        headers: {
+                            "Content-Type": "application/json",
+                            "x-api-key": apiKey,
+                            "anthropic-version": "2023-06-01"
+                        },
+                        body: JSON.stringify({
+                            model: "claude-sonnet-4-20250514",
+                            max_tokens: 50,
+                            messages: [{ role: "user", content: "Say 'working' if you can read this." }]
+                        })
+                    });
+                    
+                    if (response.ok) {
+                        alert('✅ API key works!');
+                    } else {
+                        const error = await response.json();
+                        alert('❌ API key test failed: ' + (error.error?.message || 'Invalid key'));
+                    }
+                } catch (error) {
+                    alert('❌ Test failed: ' + error.message);
+                }
+                setTesting(false);
+            };
+            
+            const removeApiKey = () => {
+                if (confirm('Remove API key? You will need to re-enter it to use AI features.')) {
+                    localStorage.removeItem('encryptedApiKey');
+                    localStorage.removeItem('apiKeySalt');
+                    sessionStorage.removeItem('tempApiKey');
+                    alert('API key removed');
+                    onApiKeyConfigured();
+                }
+            };
+            
+            return (
+                <div>
+                    <button 
+                        onClick={onBack}
+                        className="mb-4 text-blue-600 hover:text-blue-800 flex items-center gap-2 font-semibold"
+                    >
+                        <span>←</span> Back
+                    </button>
+                    
+                    <div className="bg-white p-6 rounded-lg shadow-lg">
+                        <h2 className="text-xl font-bold mb-4">⚙️ Settings</h2>
+                        
+                        {/* Auto-Lock Preference */}
+                        <div className="mb-6 p-4 bg-blue-50 border border-blue-200 rounded-lg">
+                            <label className="block text-sm font-semibold text-blue-900 mb-2">
+                                🔒 Auto-Lock Timer
+                            </label>
+                            <select
+                                value={autoLockMinutes}
+                                onChange={(e) => saveAutoLockPreference(parseInt(e.target.value))}
+                                className="w-full p-3 border border-blue-300 rounded-lg bg-white"
+                            >
+                                <option value="5">5 minutes (Most Secure)</option>
+                                <option value="15">15 minutes (Balanced)</option>
+                                <option value="30">30 minutes (Relaxed)</option>
+                                <option value="60">1 hour (Long Sessions)</option>
+                                <option value="0">Never (Until Browser Closes)</option>
+                            </select>
+                            <p className="text-xs text-blue-700 mt-2">
+                                {autoLockMinutes === 0 
+                                    ? "⚠️ API key stays unlocked until you close this browser tab. Still secure!" 
+                                    : `🔐 API key auto-locks after ${autoLockMinutes} minute${autoLockMinutes === 1 ? '' : 's'} of inactivity.`
+                                }
+                            </p>
+                        </div>
+                        
+                        {/* Security Disclaimer */}
+                        <div className="mb-6 p-4 bg-yellow-50 border-l-4 border-yellow-400 rounded">
+                            <div className="flex items-start gap-2">
+                                <span className="text-xl">⚠️</span>
+                                <div className="text-sm">
+                                    <p className="font-semibold text-yellow-800 mb-1">Security Notice</p>
+                                    <p className="text-yellow-700">Your API key will be encrypted with AES-256 encryption and protected by your 6-digit PIN. While this is reasonably secure, storing API keys in a browser has inherent risks. Only use this feature on devices you trust and control.</p>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        {apiKeyConfigured ? (
+                            <div className="space-y-4">
+                                <div className="p-4 bg-green-50 border border-green-200 rounded-lg">
+                                    <div className="flex items-center gap-2 mb-2">
+                                        <span className="text-2xl">✅</span>
+                                        <p className="font-semibold text-green-800">API Key Configured</p>
+                                    </div>
+                                    <p className="text-sm text-green-700">AI smart matching is enabled!</p>
+                                </div>
+                                
+                                <button
+                                    onClick={removeApiKey}
+                                    className="w-full bg-red-100 text-red-700 py-3 rounded-lg hover:bg-red-200 border border-red-300"
+                                >
+                                    🗑️ Remove API Key
+                                </button>
+                            </div>
+                        ) : (
+                            <div className="space-y-4">
+                                <div className="p-4 bg-blue-50 border border-blue-200 rounded-lg">
+                                    <p className="text-sm text-blue-800 mb-2">
+                                        <strong>Get a free API key:</strong>
+                                    </p>
+                                    <ol className="text-sm text-blue-700 space-y-1 ml-4 list-decimal">
+                                        <li>Visit <a href="https://console.anthropic.com" target="_blank" className="underline">console.anthropic.com</a></li>
+                                        <li>Sign up (includes $5 free credit)</li>
+                                        <li>Copy your API key</li>
+                                        <li>Paste it below</li>
+                                    </ol>
+                                    <p className="text-xs text-blue-600 mt-2">💡 $5 = ~1,500-5,000 AI checks (months of use!)</p>
+                                </div>
+                                
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-700 mb-1">Anthropic API Key</label>
+                                    <div className="relative">
+                                        <input 
+                                            type={showKey ? "text" : "password"}
+                                            value={apiKey}
+                                            onChange={(e) => setApiKey(e.target.value)}
+                                            placeholder="sk-ant-api03-..."
+                                            className="w-full p-3 border border-gray-300 rounded-lg pr-20 font-mono text-sm"
+                                        />
+                                        <button
+                                            type="button"
+                                            onClick={() => setShowKey(!showKey)}
+                                            className="absolute right-2 top-2 px-3 py-1 text-sm text-blue-600 hover:text-blue-800"
+                                        >
+                                            {showKey ? '👁️' : '👁️‍🗨️'}
+                                        </button>
+                                    </div>
+                                </div>
+                                
+                                <button
+                                    onClick={testApiKey}
+                                    disabled={testing || !apiKey}
+                                    className="w-full bg-blue-100 text-blue-700 py-2 rounded-lg hover:bg-blue-200 border border-blue-300 disabled:opacity-50 text-sm"
+                                >
+                                    {testing ? '⏳ Testing...' : '🧪 Test API Key'}
+                                </button>
+                                
+                                <div className="pt-4 border-t border-gray-200">
+                                    <p className="text-sm font-medium text-gray-700 mb-3">Set a 6-digit PIN to protect your API key:</p>
+                                    
+                                    <div className="space-y-3">
+                                        <div>
+                                            <label className="block text-sm text-gray-600 mb-1">PIN (6 digits)</label>
+                                            <input 
+                                                type="password"
+                                                value={pin}
+                                                onChange={(e) => setPin(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                                                placeholder="123456"
+                                                maxLength={6}
+                                                className="w-full p-3 border border-gray-300 rounded-lg text-center text-2xl tracking-widest"
+                                            />
+                                        </div>
+                                        
+                                        <div>
+                                            <label className="block text-sm text-gray-600 mb-1">Confirm PIN</label>
+                                            <input 
+                                                type="password"
+                                                value={confirmPin}
+                                                onChange={(e) => setConfirmPin(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                                                placeholder="123456"
+                                                maxLength={6}
+                                                className="w-full p-3 border border-gray-300 rounded-lg text-center text-2xl tracking-widest"
+                                            />
+                                        </div>
+                                    </div>
+                                </div>
+                                
+                                <button
+                                    onClick={encryptAndSaveApiKey}
+                                    disabled={saving || !apiKey || pin.length !== 6 || confirmPin.length !== 6}
+                                    className="w-full bg-green-600 text-white py-3 rounded-lg hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed font-semibold"
+                                >
+                                    {saving ? '🔐 Encrypting...' : '💾 Save Encrypted API Key'}
+                                </button>
+                            </div>
+                        )}
+                        
+                        <div className="mt-6 pt-6 border-t border-gray-200">
+                            <p className="text-xs text-gray-500">
+                                🔒 Your API key is encrypted with AES-256 and stored locally. Auto-lock is configurable. App version 1.1
+                            </p>
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
+        function UnlockView({ onUnlock, onCancel }) {
+            const [pin, setPin] = useState('');
+            const [unlocking, setUnlocking] = useState(false);
+            const [error, setError] = useState('');
+            const [autoLockMinutes, setAutoLockMinutes] = useState(5);
+            
+            // Load current auto-lock preference
+            useEffect(() => {
+                try {
+                    const lockPref = localStorage.getItem('autoLockMinutes');
+                    if (lockPref !== null) {
+                        setAutoLockMinutes(parseInt(lockPref));
+                    }
+                } catch (e) {
+                    setAutoLockMinutes(5);
+                }
+            }, []);
+            
+            const handleUnlock = async () => {
+                if (pin.length !== 6) {
+                    setError('PIN must be 6 digits');
+                    return;
+                }
+                
+                setUnlocking(true);
+                setError('');
+                
+                try {
+                    const encrypted = localStorage.getItem('encryptedApiKey');
+                    const salt = localStorage.getItem('apiKeySalt');
+                    
+                    if (!encrypted || !salt) {
+                        setError('No API key found. Please configure in Settings.');
+                        setUnlocking(false);
+                        return;
+                    }
+                    
+                    const enc = new TextEncoder();
+                    const keyMaterial = await window.crypto.subtle.importKey(
+                        "raw",
+                        enc.encode(pin),
+                        "PBKDF2",
+                        false,
+                        ["deriveBits", "deriveKey"]
+                    );
+                    
+                    const key = await window.crypto.subtle.deriveKey(
+                        {
+                            name: "PBKDF2",
+                            salt: new Uint8Array(salt.split(',').map(Number)),
+                            iterations: 100000,
+                            hash: "SHA-256"
+                        },
+                        keyMaterial,
+                        { name: "AES-GCM", length: 256 },
+                        false,
+                        ["decrypt"]
+                    );
+                    
+                    const encryptedData = JSON.parse(encrypted);
+                    const decrypted = await window.crypto.subtle.decrypt(
+                        {
+                            name: "AES-GCM",
+                            iv: new Uint8Array(encryptedData.iv)
+                        },
+                        key,
+                        new Uint8Array(encryptedData.data)
+                    );
+                    
+                    const apiKey = new TextDecoder().decode(decrypted);
+                    
+                    // Store decrypted key in session storage (cleared when browser closes)
+                    sessionStorage.setItem('tempApiKey', apiKey);
+                    
+                    onUnlock();
+                } catch (error) {
+                    console.error('Unlock failed:', error);
+                    setError('Incorrect PIN. Please try again.');
+                    setPin('');
+                }
+                setUnlocking(false);
+            };
+            
+            return (
+                <div className="flex items-center justify-center min-h-[60vh]">
+                    <div className="bg-white p-8 rounded-lg shadow-lg max-w-md w-full">
+                        <div className="text-center mb-6">
+                            <div className="text-6xl mb-4">🔐</div>
+                            <h2 className="text-2xl font-bold mb-2">Enter PIN</h2>
+                            <p className="text-sm text-gray-600">Unlock AI smart matching features</p>
+                        </div>
+                        
+                        <div className="space-y-4">
+                            <div>
+                                <input 
+                                    type="password"
+                                    value={pin}
+                                    onChange={(e) => {
+                                        setPin(e.target.value.replace(/\D/g, '').slice(0, 6));
+                                        setError('');
+                                    }}
+                                    onKeyPress={(e) => e.key === 'Enter' && handleUnlock()}
+                                    placeholder="Enter 6-digit PIN"
+                                    maxLength={6}
+                                    autoFocus
+                                    className="w-full p-4 border-2 border-gray-300 rounded-lg text-center text-3xl tracking-widest focus:border-blue-500"
+                                />
+                                {error && (
+                                    <p className="text-red-600 text-sm mt-2 text-center">{error}</p>
+                                )}
+                            </div>
+                            
+                            <button
+                                onClick={handleUnlock}
+                                disabled={unlocking || pin.length !== 6}
+                                className="w-full bg-blue-600 text-white py-4 rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed font-semibold text-lg"
+                            >
+                                {unlocking ? '🔓 Unlocking...' : '🔓 Unlock'}
+                            </button>
+                            
+                            <button
+                                onClick={onCancel}
+                                className="w-full bg-gray-200 text-gray-700 py-3 rounded-lg hover:bg-gray-300"
+                            >
+                                Cancel
+                            </button>
+                            
+                            <p className="text-xs text-center text-gray-500 mt-4">
+                                {autoLockMinutes === 0 
+                                    ? "🔓 Stays unlocked until you close this browser tab"
+                                    : `🕐 Auto-locks after ${autoLockMinutes} minute${autoLockMinutes === 1 ? '' : 's'} of inactivity`
+                                }
+                            </p>
+                            <p className="text-xs text-center text-gray-400 mt-1">
+                                Change in Settings ⚙️
+                            </p>
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
