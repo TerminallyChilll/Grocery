@@ -96,6 +96,16 @@
             }, [items]);
 
             const startScanning = (onScan) => {
+                // Check for HTTPS requirement (except localhost)
+                const isSecureContext = window.isSecureContext || 
+                                       location.hostname === 'localhost' || 
+                                       location.hostname === '127.0.0.1';
+                
+                if (!isSecureContext) {
+                    alert("📱 Camera access requires HTTPS!\n\nFor Android devices:\n• Use HTTPS URL to access this site\n• Or access via localhost for testing\n\nCamera won't work on HTTP connections for security reasons.");
+                    return;
+                }
+
                 setScanning(true);
                 const html5QrCode = new Html5Qrcode("reader");
                 setScanner(html5QrCode);
@@ -111,7 +121,7 @@
                 // Try multiple approaches for Android compatibility
                 const tryFacingMode = () => {
                     return html5QrCode.start(
-                        { facingMode: "environment" },
+                        { facingMode: { ideal: "environment" } },
                         config,
                         (decodedText) => {
                             html5QrCode.stop().then(() => {
@@ -165,7 +175,8 @@
                                 console.error("All methods failed", err2);
                                 setScanning(false);
                                 setScanner(null);
-                                alert("Unable to access camera. Please check permissions in your browser settings.");
+                                const errorMsg = getAndroidCameraErrorMessage(err2);
+                                alert(errorMsg);
                             });
                         });
                     } else {
@@ -175,7 +186,8 @@
                             console.error("FacingMode failed", err);
                             setScanning(false);
                             setScanner(null);
-                            alert("Unable to access camera. Please check permissions in your browser settings.");
+                            const errorMsg = getAndroidCameraErrorMessage(err);
+                            alert(errorMsg);
                         });
                     }
                 }).catch(err => {
@@ -185,9 +197,70 @@
                         console.error("FacingMode failed", err2);
                         setScanning(false);
                         setScanner(null);
-                        alert("Unable to access camera. Please check permissions in your browser settings.");
+                        const errorMsg = getAndroidCameraErrorMessage(err2);
+                        alert(errorMsg);
                     });
                 });
+            };
+
+            const getAndroidCameraErrorMessage = (error) => {
+                const errorStr = error?.toString() || '';
+                const errorMsg = error?.message || '';
+                
+                // Check for common Android camera errors
+                if (errorStr.includes('NotAllowedError') || errorMsg.includes('NotAllowedError') || 
+                    errorStr.includes('Permission denied') || errorMsg.includes('Permission denied')) {
+                    return "📱 Camera permission denied!\n\n" +
+                           "To fix on Android:\n" +
+                           "1. Tap the 🔒 lock icon in your browser's address bar\n" +
+                           "2. Find 'Camera' permission and set to 'Allow'\n" +
+                           "3. Reload the page and try again\n\n" +
+                           "If that doesn't work:\n" +
+                           "• Go to Android Settings → Apps → Your Browser → Permissions\n" +
+                           "• Enable Camera permission";
+                }
+                
+                if (errorStr.includes('NotFoundError') || errorMsg.includes('NotFoundError') ||
+                    errorStr.includes('Could not find') || errorMsg.includes('Could not find')) {
+                    return "📱 No camera found!\n\n" +
+                           "Please check:\n" +
+                           "• Camera is not being used by another app\n" +
+                           "• Camera is not blocked by device administrator\n" +
+                           "• Try closing other apps and reload";
+                }
+                
+                if (errorStr.includes('NotReadableError') || errorMsg.includes('NotReadableError') ||
+                    errorStr.includes('Could not start') || errorMsg.includes('Could not start')) {
+                    return "📱 Camera is busy!\n\n" +
+                           "To fix:\n" +
+                           "1. Close other apps using the camera\n" +
+                           "2. Restart your browser\n" +
+                           "3. Try again\n\n" +
+                           "If problem persists, restart your device";
+                }
+                
+                if (errorStr.includes('OverconstrainedError') || errorMsg.includes('OverconstrainedError')) {
+                    return "📱 Camera constraints not supported!\n\n" +
+                           "Your device's camera doesn't support the requested settings.\n" +
+                           "This is unusual - please report this issue.";
+                }
+                
+                if (errorStr.includes('NotSupported') || errorMsg.includes('NotSupported') ||
+                    errorStr.includes('not supported') || errorMsg.includes('not supported')) {
+                    return "📱 Camera API not supported!\n\n" +
+                           "Your browser may need to be updated.\n" +
+                           "Try using Chrome, Firefox, or Samsung Internet browser.";
+                }
+                
+                // Generic error for anything else
+                return "📱 Unable to access camera!\n\n" +
+                       "Common solutions for Android:\n" +
+                       "• Check camera permissions in browser settings\n" +
+                       "• Make sure you're using HTTPS (not HTTP)\n" +
+                       "• Close other apps using the camera\n" +
+                       "• Update your browser to the latest version\n" +
+                       "• Try a different browser (Chrome, Firefox, Samsung Internet)\n\n" +
+                       "Error: " + (errorMsg || 'Unknown error');
             };
 
             const stopScanning = () => {
