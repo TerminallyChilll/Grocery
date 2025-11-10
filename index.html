@@ -31,12 +31,15 @@
             const [editingItem, setEditingItem] = useState(null);
             const [compareItemGroup, setCompareItemGroup] = useState(null);
             const [scanning, setScanning] = useState(false);
-            const [scanner, setScanner] = useState(null);
             const [apiKeyConfigured, setApiKeyConfigured] = useState(false);
             const [apiKeyUnlocked, setApiKeyUnlocked] = useState(false);
             const [unlockTimeout, setUnlockTimeout] = useState(null);
             const [autoLockMinutes, setAutoLockMinutes] = useState(5);
             const [logs, setLogs] = useState([]);
+            
+            // Refs for scanner lifecycle management
+            const scannerRef = React.useRef(null);
+            const pendingOnScanRef = React.useRef(null);
 
             // Function to add log entries
             const addLog = (level, message, data = null) => {
@@ -162,9 +165,168 @@
                     console.log('localStorage not available - data will not persist');
                 }
             }, [items]);
+            
+            // Scanner initialization useEffect - runs when scanning becomes true
+            useEffect(() => {
+                if (!scanning) {
+                    return;
+                }
+                
+                console.log('📷 Initializing Html5Qrcode scanner after DOM render...');
+                
+                // Helper function to ensure #reader exists
+                const ensureReaderExists = (callback) => {
+                    const readerElement = document.getElementById('reader');
+                    if (readerElement) {
+                        callback();
+                    } else {
+                        console.log('⏳ Reader element not found, retrying on next frame...');
+                        requestAnimationFrame(() => {
+                            const retryElement = document.getElementById('reader');
+                            if (retryElement) {
+                                callback();
+                            } else {
+                                console.error('❌ Reader element still not found after retry');
+                                setScanning(false);
+                                alert('Unable to initialize scanner: reader element not found');
+                            }
+                        });
+                    }
+                };
+                
+                ensureReaderExists(() => {
+                    try {
+                        // Instantiate Html5Qrcode scanner
+                        const html5QrCode = new Html5Qrcode("reader");
+                        scannerRef.current = html5QrCode;
+                        
+                        // Configuration optimized for Android devices
+                        const config = {
+                            fps: 10,
+                            qrbox: { width: 250, height: 250 },
+                            aspectRatio: 1.0,
+                            formatsToSupport: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13] // Support all barcode formats
+                        };
+                        
+                        console.log('⚙️ Scanner config:', config);
+                        
+                        // Decode handler
+                        const handleDecoded = (decodedText) => {
+                            console.log('✅ Barcode scanned successfully:', decodedText);
+                            const scanner = scannerRef.current;
+                            if (scanner) {
+                                scanner.stop().then(() => {
+                                    console.log('📷 Camera stopped after successful scan');
+                                    scannerRef.current = null;
+                                    setScanning(false);
+                                    const callback = pendingOnScanRef.current;
+                                    if (callback) {
+                                        callback(decodedText);
+                                    }
+                                }).catch((stopErr) => {
+                                    console.warn('⚠️ Error stopping camera (non-critical):', stopErr);
+                                    scannerRef.current = null;
+                                    setScanning(false);
+                                    const callback = pendingOnScanRef.current;
+                                    if (callback) {
+                                        callback(decodedText);
+                                    }
+                                });
+                            }
+                        };
+                        
+                        // Try multiple approaches for Android compatibility
+                        const tryFacingMode = () => {
+                            console.log('🔄 Attempting camera start with facingMode: environment');
+                            return html5QrCode.start(
+                                { facingMode: { ideal: "environment" } },
+                                config,
+                                handleDecoded
+                            );
+                        };
+                        
+                        const tryCameraId = (cameraId) => {
+                            console.log('🔄 Attempting camera start with camera ID:', cameraId);
+                            return html5QrCode.start(
+                                cameraId,
+                                config,
+                                handleDecoded
+                            );
+                        };
+                        
+                        // First, try to get camera list
+                        console.log('📋 Requesting camera list...');
+                        Html5Qrcode.getCameras().then(cameras => {
+                            console.log(`✅ Found ${cameras.length} camera(s)`, cameras);
+                            if (cameras && cameras.length > 0) {
+                                // Prefer back/rear camera
+                                const backCamera = cameras.find(cam =>
+                                    cam.label && (
+                                        cam.label.toLowerCase().includes('back') ||
+                                        cam.label.toLowerCase().includes('rear') ||
+                                        cam.label.toLowerCase().includes('environment')
+                                    )
+                                ) || cameras[cameras.length - 1];
+                                
+                                console.log('🎯 Selected camera:', backCamera);
+                                tryCameraId(backCamera.id).catch(err => {
+                                    console.error("❌ Camera ID failed, trying facingMode", err);
+                                    // Fallback to facingMode
+                                    tryFacingMode().catch(err2 => {
+                                        console.error("❌ All camera methods failed", err2);
+                                        setScanning(false);
+                                        scannerRef.current = null;
+                                        const errorMsg = getAndroidCameraErrorMessage(err2);
+                                        alert(errorMsg);
+                                    });
+                                });
+                            } else {
+                                // No cameras found, try facingMode anyway
+                                console.warn('⚠️ No cameras in list, trying facingMode');
+                                tryFacingMode().catch(err => {
+                                    console.error("❌ FacingMode failed", err);
+                                    setScanning(false);
+                                    scannerRef.current = null;
+                                    const errorMsg = getAndroidCameraErrorMessage(err);
+                                    alert(errorMsg);
+                                });
+                            }
+                        }).catch(err => {
+                            // getCameras failed, try facingMode directly
+                            console.error("❌ getCameras failed, trying facingMode", err);
+                            tryFacingMode().catch(err2 => {
+                                console.error("❌ FacingMode failed", err2);
+                                setScanning(false);
+                                scannerRef.current = null;
+                                const errorMsg = getAndroidCameraErrorMessage(err2);
+                                alert(errorMsg);
+                            });
+                        });
+                        
+                    } catch (error) {
+                        console.error('❌ Error instantiating Html5Qrcode:', error);
+                        setScanning(false);
+                        scannerRef.current = null;
+                        alert('Failed to initialize scanner: ' + error.message);
+                    }
+                });
+                
+                // Cleanup function
+                return () => {
+                    const scanner = scannerRef.current;
+                    if (scanner) {
+                        console.log('🧹 Cleaning up scanner on unmount/effect cancel');
+                        scanner.stop().catch(err => {
+                            console.warn('⚠️ Error stopping scanner during cleanup:', err);
+                        }).finally(() => {
+                            scannerRef.current = null;
+                        });
+                    }
+                };
+            }, [scanning]);
 
             const startScanning = (onScan) => {
-                console.log('🎥 Starting camera scan...');
+                console.log('🎥 Requested to start scan');
                 
                 // Check for HTTPS requirement (except localhost)
                 const isSecureContext = window.isSecureContext || 
@@ -178,115 +340,15 @@
                     alert("📱 Camera access requires HTTPS!\n\nFor Android devices:\n• Use HTTPS URL to access this site\n• Or access via localhost for testing\n\nCamera won't work on HTTP connections for security reasons.");
                     return;
                 }
-
-                setScanning(true);
-                console.log('📷 Initializing Html5Qrcode scanner...');
-                const html5QrCode = new Html5Qrcode("reader");
-                setScanner(html5QrCode);
-
-                // Configuration optimized for Android devices
-                const config = {
-                    fps: 10,
-                    qrbox: { width: 250, height: 250 },
-                    aspectRatio: 1.0,
-                    formatsToSupport: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13] // Support all barcode formats
-                };
                 
-                console.log('⚙️ Scanner config:', config);
-
-                // Try multiple approaches for Android compatibility
-                const tryFacingMode = () => {
-                    console.log('🔄 Attempting camera start with facingMode: environment');
-                    return html5QrCode.start(
-                        { facingMode: { ideal: "environment" } },
-                        config,
-                        (decodedText) => {
-                            console.log('✅ Barcode scanned successfully:', decodedText);
-                            html5QrCode.stop().then(() => {
-                                console.log('📷 Camera stopped after successful scan');
-                                setScanning(false);
-                                setScanner(null);
-                                onScan(decodedText);
-                            }).catch((stopErr) => {
-                                console.warn('⚠️ Error stopping camera (non-critical):', stopErr);
-                                setScanning(false);
-                                setScanner(null);
-                                onScan(decodedText);
-                            });
-                        }
-                    );
-                };
-
-                const tryCameraId = (cameraId) => {
-                    console.log('🔄 Attempting camera start with camera ID:', cameraId);
-                    return html5QrCode.start(
-                        cameraId,
-                        config,
-                        (decodedText) => {
-                            console.log('✅ Barcode scanned successfully:', decodedText);
-                            html5QrCode.stop().then(() => {
-                                console.log('📷 Camera stopped after successful scan');
-                                setScanning(false);
-                                setScanner(null);
-                                onScan(decodedText);
-                            }).catch((stopErr) => {
-                                console.warn('⚠️ Error stopping camera (non-critical):', stopErr);
-                                setScanning(false);
-                                setScanner(null);
-                                onScan(decodedText);
-                            });
-                        }
-                    );
-                };
-
-                // First, try to get camera list
-                console.log('📋 Requesting camera list...');
-                Html5Qrcode.getCameras().then(cameras => {
-                    console.log(`✅ Found ${cameras.length} camera(s)`, cameras);
-                    if (cameras && cameras.length > 0) {
-                        // Prefer back/rear camera
-                        const backCamera = cameras.find(cam =>
-                            cam.label && (
-                                cam.label.toLowerCase().includes('back') ||
-                                cam.label.toLowerCase().includes('rear') ||
-                                cam.label.toLowerCase().includes('environment')
-                            )
-                        ) || cameras[cameras.length - 1];
-
-                        console.log('🎯 Selected camera:', backCamera);
-                        tryCameraId(backCamera.id).catch(err => {
-                            console.error("❌ Camera ID failed, trying facingMode", err);
-                            // Fallback to facingMode
-                            tryFacingMode().catch(err2 => {
-                                console.error("❌ All camera methods failed", err2);
-                                setScanning(false);
-                                setScanner(null);
-                                const errorMsg = getAndroidCameraErrorMessage(err2);
-                                alert(errorMsg);
-                            });
-                        });
-                    } else {
-                        // No cameras found, try facingMode anyway
-                        console.warn('⚠️ No cameras in list, trying facingMode');
-                        tryFacingMode().catch(err => {
-                            console.error("❌ FacingMode failed", err);
-                            setScanning(false);
-                            setScanner(null);
-                            const errorMsg = getAndroidCameraErrorMessage(err);
-                            alert(errorMsg);
-                        });
-                    }
-                }).catch(err => {
-                    // getCameras failed, try facingMode directly
-                    console.error("❌ getCameras failed, trying facingMode", err);
-                    tryFacingMode().catch(err2 => {
-                        console.error("❌ FacingMode failed", err2);
-                        setScanning(false);
-                        setScanner(null);
-                        const errorMsg = getAndroidCameraErrorMessage(err2);
-                        alert(errorMsg);
-                    });
-                });
+                if (scanning) {
+                    console.warn('⚠️ Scan already in progress');
+                    return;
+                }
+                
+                // Store callback and trigger scanner initialization via useEffect
+                pendingOnScanRef.current = onScan;
+                setScanning(true);
             };
 
             const getAndroidCameraErrorMessage = (error) => {
@@ -359,22 +421,18 @@
 
             const stopScanning = () => {
                 console.log('🛑 Stopping camera...');
+                setScanning(false);
+                const scanner = scannerRef.current;
                 if (scanner) {
                     scanner.stop().then(() => {
                         console.log('✅ Camera stopped successfully');
-                        setScanning(false);
-                        setScanner(null);
                     }).catch((err) => {
                         console.error("❌ Error stopping scanner:", err);
-                        // Force cleanup even if stop fails
-                        setScanning(false);
-                        setScanner(null);
+                    }).finally(() => {
+                        scannerRef.current = null;
                     });
                 } else {
-                    console.warn('⚠️ No scanner object to stop');
-                    // Just in case scanner object is null but state says scanning
-                    setScanning(false);
-                    setScanner(null);
+                    console.warn('⚠️ No scanner instance to stop');
                 }
             };
 
