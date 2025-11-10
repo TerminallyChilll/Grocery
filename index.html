@@ -179,114 +179,119 @@
                     return;
                 }
 
+                // Set scanning state first to trigger React render of the reader element
                 setScanning(true);
-                console.log('📷 Initializing Html5Qrcode scanner...');
-                const html5QrCode = new Html5Qrcode("reader");
-                setScanner(html5QrCode);
-
-                // Configuration optimized for Android devices
-                const config = {
-                    fps: 10,
-                    qrbox: { width: 250, height: 250 },
-                    aspectRatio: 1.0,
-                    formatsToSupport: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13] // Support all barcode formats
-                };
                 
-                console.log('⚙️ Scanner config:', config);
+                // Wait for React to commit the DOM changes before initializing Html5Qrcode
+                setTimeout(() => {
+                    console.log('📷 Initializing Html5Qrcode scanner...');
+                    const html5QrCode = new Html5Qrcode("reader");
+                    setScanner(html5QrCode);
 
-                // Try multiple approaches for Android compatibility
-                const tryFacingMode = () => {
-                    console.log('🔄 Attempting camera start with facingMode: environment');
-                    return html5QrCode.start(
-                        { facingMode: { ideal: "environment" } },
-                        config,
-                        (decodedText) => {
-                            console.log('✅ Barcode scanned successfully:', decodedText);
-                            html5QrCode.stop().then(() => {
-                                console.log('📷 Camera stopped after successful scan');
-                                setScanning(false);
-                                setScanner(null);
-                                onScan(decodedText);
-                            }).catch((stopErr) => {
-                                console.warn('⚠️ Error stopping camera (non-critical):', stopErr);
-                                setScanning(false);
-                                setScanner(null);
-                                onScan(decodedText);
+                    // Configuration optimized for Android devices
+                    const config = {
+                        fps: 10,
+                        qrbox: { width: 250, height: 250 },
+                        aspectRatio: 1.0,
+                        formatsToSupport: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13] // Support all barcode formats
+                    };
+                    
+                    console.log('⚙️ Scanner config:', config);
+
+                    // Try multiple approaches for Android compatibility
+                    const tryFacingMode = () => {
+                        console.log('🔄 Attempting camera start with facingMode: environment');
+                        return html5QrCode.start(
+                            { facingMode: { ideal: "environment" } },
+                            config,
+                            (decodedText) => {
+                                console.log('✅ Barcode scanned successfully:', decodedText);
+                                html5QrCode.stop().then(() => {
+                                    console.log('📷 Camera stopped after successful scan');
+                                    setScanning(false);
+                                    setScanner(null);
+                                    onScan(decodedText);
+                                }).catch((stopErr) => {
+                                    console.warn('⚠️ Error stopping camera (non-critical):', stopErr);
+                                    setScanning(false);
+                                    setScanner(null);
+                                    onScan(decodedText);
+                                });
+                            }
+                        );
+                    };
+
+                    const tryCameraId = (cameraId) => {
+                        console.log('🔄 Attempting camera start with camera ID:', cameraId);
+                        return html5QrCode.start(
+                            cameraId,
+                            config,
+                            (decodedText) => {
+                                console.log('✅ Barcode scanned successfully:', decodedText);
+                                html5QrCode.stop().then(() => {
+                                    console.log('📷 Camera stopped after successful scan');
+                                    setScanning(false);
+                                    setScanner(null);
+                                    onScan(decodedText);
+                                }).catch((stopErr) => {
+                                    console.warn('⚠️ Error stopping camera (non-critical):', stopErr);
+                                    setScanning(false);
+                                    setScanner(null);
+                                    onScan(decodedText);
+                                });
+                            }
+                        );
+                    };
+
+                    // First, try to get camera list
+                    console.log('📋 Requesting camera list...');
+                    Html5Qrcode.getCameras().then(cameras => {
+                        console.log(`✅ Found ${cameras.length} camera(s)`, cameras);
+                        if (cameras && cameras.length > 0) {
+                            // Prefer back/rear camera
+                            const backCamera = cameras.find(cam =>
+                                cam.label && (
+                                    cam.label.toLowerCase().includes('back') ||
+                                    cam.label.toLowerCase().includes('rear') ||
+                                    cam.label.toLowerCase().includes('environment')
+                                )
+                            ) || cameras[cameras.length - 1];
+
+                            console.log('🎯 Selected camera:', backCamera);
+                            tryCameraId(backCamera.id).catch(err => {
+                                console.error("❌ Camera ID failed, trying facingMode", err);
+                                // Fallback to facingMode
+                                tryFacingMode().catch(err2 => {
+                                    console.error("❌ All camera methods failed", err2);
+                                    setScanning(false);
+                                    setScanner(null);
+                                    const errorMsg = getAndroidCameraErrorMessage(err2);
+                                    alert(errorMsg);
+                                });
                             });
-                        }
-                    );
-                };
-
-                const tryCameraId = (cameraId) => {
-                    console.log('🔄 Attempting camera start with camera ID:', cameraId);
-                    return html5QrCode.start(
-                        cameraId,
-                        config,
-                        (decodedText) => {
-                            console.log('✅ Barcode scanned successfully:', decodedText);
-                            html5QrCode.stop().then(() => {
-                                console.log('📷 Camera stopped after successful scan');
+                        } else {
+                            // No cameras found, try facingMode anyway
+                            console.warn('⚠️ No cameras in list, trying facingMode');
+                            tryFacingMode().catch(err => {
+                                console.error("❌ FacingMode failed", err);
                                 setScanning(false);
                                 setScanner(null);
-                                onScan(decodedText);
-                            }).catch((stopErr) => {
-                                console.warn('⚠️ Error stopping camera (non-critical):', stopErr);
-                                setScanning(false);
-                                setScanner(null);
-                                onScan(decodedText);
-                            });
-                        }
-                    );
-                };
-
-                // First, try to get camera list
-                console.log('📋 Requesting camera list...');
-                Html5Qrcode.getCameras().then(cameras => {
-                    console.log(`✅ Found ${cameras.length} camera(s)`, cameras);
-                    if (cameras && cameras.length > 0) {
-                        // Prefer back/rear camera
-                        const backCamera = cameras.find(cam =>
-                            cam.label && (
-                                cam.label.toLowerCase().includes('back') ||
-                                cam.label.toLowerCase().includes('rear') ||
-                                cam.label.toLowerCase().includes('environment')
-                            )
-                        ) || cameras[cameras.length - 1];
-
-                        console.log('🎯 Selected camera:', backCamera);
-                        tryCameraId(backCamera.id).catch(err => {
-                            console.error("❌ Camera ID failed, trying facingMode", err);
-                            // Fallback to facingMode
-                            tryFacingMode().catch(err2 => {
-                                console.error("❌ All camera methods failed", err2);
-                                setScanning(false);
-                                setScanner(null);
-                                const errorMsg = getAndroidCameraErrorMessage(err2);
+                                const errorMsg = getAndroidCameraErrorMessage(err);
                                 alert(errorMsg);
                             });
-                        });
-                    } else {
-                        // No cameras found, try facingMode anyway
-                        console.warn('⚠️ No cameras in list, trying facingMode');
-                        tryFacingMode().catch(err => {
-                            console.error("❌ FacingMode failed", err);
+                        }
+                    }).catch(err => {
+                        // getCameras failed, try facingMode directly
+                        console.error("❌ getCameras failed, trying facingMode", err);
+                        tryFacingMode().catch(err2 => {
+                            console.error("❌ FacingMode failed", err2);
                             setScanning(false);
                             setScanner(null);
-                            const errorMsg = getAndroidCameraErrorMessage(err);
+                            const errorMsg = getAndroidCameraErrorMessage(err2);
                             alert(errorMsg);
                         });
-                    }
-                }).catch(err => {
-                    // getCameras failed, try facingMode directly
-                    console.error("❌ getCameras failed, trying facingMode", err);
-                    tryFacingMode().catch(err2 => {
-                        console.error("❌ FacingMode failed", err2);
-                        setScanning(false);
-                        setScanner(null);
-                        const errorMsg = getAndroidCameraErrorMessage(err2);
-                        alert(errorMsg);
                     });
-                });
+                }, 0);
             };
 
             const getAndroidCameraErrorMessage = (error) => {
