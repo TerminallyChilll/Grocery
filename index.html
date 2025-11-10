@@ -220,6 +220,7 @@
                                     scannerRef.current = null;
                                     setScanning(false);
                                     const callback = pendingOnScanRef.current;
+                                    pendingOnScanRef.current = null;
                                     if (callback) {
                                         callback(decodedText);
                                     }
@@ -228,6 +229,7 @@
                                     scannerRef.current = null;
                                     setScanning(false);
                                     const callback = pendingOnScanRef.current;
+                                    pendingOnScanRef.current = null;
                                     if (callback) {
                                         callback(decodedText);
                                     }
@@ -430,9 +432,12 @@
                         console.error("❌ Error stopping scanner:", err);
                     }).finally(() => {
                         scannerRef.current = null;
+                        pendingOnScanRef.current = null;
                     });
                 } else {
                     console.warn('⚠️ No scanner instance to stop');
+                    scannerRef.current = null;
+                    pendingOnScanRef.current = null;
                 }
             };
 
@@ -601,6 +606,15 @@
                                 <span className="text-xl">➕</span>
                                 <span className="text-xs mt-1">Add</span>
                             </button>
+                            {scanning && (
+                                <button 
+                                    onClick={stopScanning}
+                                    className="flex flex-col items-center px-2 py-2 rounded-lg text-red-600 bg-red-50"
+                                >
+                                    <span className="text-xl">🛑</span>
+                                    <span className="text-xs mt-1">Stop</span>
+                                </button>
+                            )}
                             <button 
                                 onClick={() => setView('logs')}
                                 className={`flex flex-col items-center px-2 py-2 rounded-lg relative ${view === 'logs' ? 'text-blue-600 bg-blue-50' : 'text-gray-600'}`}
@@ -760,6 +774,13 @@
             const [aiSuggestions, setAiSuggestions] = useState([]);
             const [checkingAI, setCheckingAI] = useState(false);
             const [showBarcodeScanner, setShowBarcodeScanner] = useState(false);
+            
+            // Watch scanning prop and hide scanner UI when scanning stops
+            useEffect(() => {
+                if (!scanning) {
+                    setShowBarcodeScanner(false);
+                }
+            }, [scanning]);
             
             // Helper to get decrypted API key
             const getApiKey = async (pin) => {
@@ -984,10 +1005,13 @@ DO NOT include any explanation, just the JSON.`
                         <div className="scanner-container mb-4">
                             <div id="reader"></div>
                             <button 
-                                onClick={onStopScan}
+                                onClick={() => {
+                                    onStopScan();
+                                    setShowBarcodeScanner(false);
+                                }}
                                 className="w-full mt-3 bg-red-500 text-white py-2 rounded-lg hover:bg-red-600"
                             >
-                                Cancel Scan
+                                Stop &amp; Reset
                             </button>
                         </div>
                     )}
