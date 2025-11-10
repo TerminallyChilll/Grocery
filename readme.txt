@@ -31,7 +31,7 @@
 
   ### Access the App
   Simply open the app in your browser:
-  - **Live Demo**: `https://terminallychiill.github.io/Grocery/grocery-price-tracker-pro.html`
+  - **Live Demo**: `https://terminallychiill.github.io/Grocery/Grocery.html`
   - **Local**: Open `grocery-price-tracker-pro.html` in any modern browser
 
   ### Adding Items
